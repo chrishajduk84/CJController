@@ -5,14 +5,26 @@
 #include <initializer_list>
 #include <fstream>
 #include <thread>
+#include "libusb.h"
+#include <string>
+#include <string.h>
+#include <sstream>
+#include <sys/stat.h>
+#include <dirent.h>
 
 using namespace LibSerial;
 using namespace std;
 
 SerialStream serial;
 fstream of("raw_data.csv",fstream::out);
+string lL;
+string* lastLine = &lL;
+bool lineLock = false;
+bool* plL = &lineLock;
 
+bool terminalOutput = false;
 bool dataCollect = false;
+
 
 /**
  * @class Command
@@ -93,7 +105,22 @@ vector<Command> commands = {
     string::size_type st = sendString.length()*8;
 	serial.write(sendString.c_str(), st);
     }),
-    
+    Command("data.show", "shows data coming from the device; specifying an integer will output data only from the specified column", {}, [=](vector<string> args) {
+        bool threadFlag = false;
+        bool* tf = &threadFlag;
+        thread t([=](){
+            string tmp = *lastLine;
+            while (!*tf) {
+                if (tmp != *lastLine && !*plL){
+                    cout << *lastLine << endl;
+                    tmp = *lastLine;
+                }
+            }
+        });
+        cin.get();
+        threadFlag = true;
+        t.join();
+    }),
 };
 
 void handle_input() {
@@ -131,22 +158,69 @@ void handle_input() {
 
 void collectData(){
     while(dataCollect){
-        string buf;
-        getline(serial,buf);
-        of << buf;
-        cout <<"BUF->"<< buf;
+        *plL = true;
+        getline(serial,*lastLine);
+        *plL = false;
+        of << *lastLine; 
     }
 }
 
 int main(int argc, char** argv){
      //TODO: Find the USB device corresponding to the cycling jig, usually /dev/ttyACM0, but not guarenteed.
-     serial.Open("/dev/ttyACM1");
+     /*libusb_device** dev;
+     int r = 0; int cnt = 0;
+     if ((r = libusb_init(NULL)) < 0) return r;
+     if ((cnt = libusb_get_device_list(NULL,&dev)) < 0) return (int)cnt;
+     
+     string portName = "/dev/ttyACM";
+     libusb_device_handle* handle = NULL;
+     struct libusb_device_descriptor desc;
+     for (int i = 0; i < cnt; i++){
+        if ((r = libusb_get_device_descriptor(dev[i], &desc)) < 0) cout << "Error getting descriptor" << endl;
+        cout << "ID" << desc.idVendor << endl;
+        if (desc.idVendor == 0x2341){ //This is an Arduino
+                if ((r = libusb_open(dev[i],&handle)) == LIBUSB_SUCCESS){
+                    uint8_t usbarray[7];
+                    libusb_get_port_numbers(dev[i],usbarray,7);
+                    libusb_get_configuration(handle,&r);
+                    cout << "ADD" << to_string(r) <<endl;
+                    cout << to_string(usbarray[0]);
+                    portName += to_string(usbarray[0]);
+                    break;
+                }
+        }
+     }*/
+    int n;
+    struct dirent **namelist;
+    const char* sysdir = "/dev/";
+    string portName;
+    // Scan through /sys/class/tty - it contains all tty-devices in the system
+    n = scandir(sysdir, &namelist, NULL, NULL);
+    if (n < 0)
+        perror("scandir");
+    else {
+        while (n--) {
+            if (strcmp(namelist[n]->d_name,"..") && strcmp(namelist[n]->d_name,".")) {
+
+                // Construct full absolute file path
+                string devicedir = sysdir;
+                devicedir += namelist[n]->d_name;
+                if (devicedir.find("ACM") != string::npos){
+                    portName = devicedir;
+                }
+            }
+            free(namelist[n]);
+        }
+        free(namelist);
+    }
+
+     serial.Open(portName);
      serial.SetCharSize(SerialStreamBuf::CHAR_SIZE_8);
      serial.SetBaudRate(SerialStreamBuf::BAUD_115200);
      serial.SetNumOfStopBits(1);
      serial.SetFlowControl(SerialStreamBuf::FLOW_CONTROL_NONE);
      if(serial.good()){
-         cout << "SUCCESSFUL: serial port opened at: /dev/ttyACM1" << endl;
+         cout << "SUCCESSFUL: serial port opened at: " << portName << endl;
          usleep(1000);
      }
      else{
@@ -165,4 +239,3 @@ int main(int argc, char** argv){
      dataCollection.join();
      of.close();
 }
-
