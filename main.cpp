@@ -20,7 +20,7 @@
 
 using namespace std;
 
-int pid, serial_fd;
+int serial_fd;
 fstream of("raw_data.csv",fstream::out);
 fstream* pof = &of;
 string lL;
@@ -223,33 +223,32 @@ vector<Command> commands = {
 
 int openDevice(const char* device){
      struct termios port_config; //sets up termios configuration structure for the serial port
-     char input[10];
-
-     serial_fd = open(device, O_RDWR | O_NOCTTY | O_NDELAY); //opens serial port in device slot
+     serial_fd = open(device, O_RDWR, O_NOCTTY);// | O_NOCTTY | O_NDELAY); //opens serial port in device slot
      if(serial_fd == -1)
      { //-1 is the error message for failed open port
            fprintf(stdout, "failed to open port\n");
      }
 
-     tcgetattr(serial_fd, &port_config);
+     if (tcgetattr(serial_fd, &port_config) < 0){
+         cout << "Error getting port configuration" << endl;   
+     }
 
-     cfsetispeed(&port_config, B115200); //set baud input to 9600 (might be wrong?)
-     cfsetospeed(&port_config, B115200); //set baud output to 9600 (might be wrong?)
+     if (cfsetospeed(&port_config, B115200) < 0){
+         cout << "Error setting output baud rate" << endl;
+     }
+     if (cfsetispeed(&port_config, B115200) < 0){
+         cout << "Error setting input baud rate" << endl;
+     }
 
-
-     port_config.c_iflag = 0; //input flags
-     //port_config.c_iflag &= (INLCR); //input flags (XON/XOFF software flow control, no NL to CR translation)
-     port_config.c_oflag = 0; //output flags
-     port_config.c_lflag = 0;// ~(ECHO | ECHONL | ICANON | IEXTEN | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
-     port_config.c_cflag = 0; //control flags
-     port_config.c_cflag &= (CLOCAL | CREAD | CS8); //control flags (local connection, enable receivingt characters, force 8 bit input)
-
+     port_config.c_iflag &= ~(IXANY | IXOFF | IXON); //input flags (XON/XOFF software flow control, no NL to CR translation)
+     port_config.c_oflag &= ~OPOST;
+     port_config.c_lflag &= ~(ECHO | ECHOE | ICANON | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
+     port_config.c_cflag &= ~(CSIZE | PARENB | CSTOPB | CRTSCTS);
+     port_config.c_cflag |= (CS8 | CREAD | CLOCAL); //Control flags (local connection, enable receivingt characters, force 8 bit input)
 
      port_config.c_cc[VMIN]  = 1;
      port_config.c_cc[VTIME] = 0;
      tcsetattr(serial_fd, TCSANOW, &port_config); //Sets the termios struct of the file handle fd from the options defined in options. TCSAFLUSH performs the change as soon as possible.
-
-     pid = fork(); //splits process for recieving and sending
      cout << "Serial port opened on: " << device << endl;
 }
 
@@ -289,17 +288,18 @@ void handle_input() {
 void collectData(string filename){
     fstream of(filename, fstream::out);
     while(dataCollect){
-        *plL = true;
-	char c;
-	*lastLine = "";
-	//while (c != '\0'){ 
-             if (read(serial_fd,&c,1) > 0){
-	          *lastLine += c;
-	          cout << c << endl;  
-	     }
-	//}
-        *plL = false;
-        of << *lastLine << flush;
+        if (!*plL){
+            *plL = true;
+	        char c;
+	        *lastLine = "";
+	        do{ 
+                if (read(serial_fd,&c,1) > 0){
+	                *lastLine += c;      
+	            }
+	        } while (c != 13 && c != 10);
+            *plL = false;
+            of << *lastLine << flush;
+        }
     }
 }
 
