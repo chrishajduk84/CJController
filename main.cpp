@@ -14,11 +14,15 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <signal.h>
+#include "main.h"
+
 
 using namespace std;
 
 int pid, serial_fd;
 fstream of("raw_data.csv",fstream::out);
+fstream* pof = &of;
 string lL;
 string* lastLine = &lL;
 bool lineLock = false;
@@ -26,7 +30,7 @@ bool* plL = &lineLock;
 
 bool terminalOutput = false;
 bool dataCollect = false;
-
+bool exitRequest = false;
 
 /**
  * @class Command
@@ -88,7 +92,7 @@ vector<Command> commands = {
             }
         } else {
            //TODO: Parse arguments
-        }
+    }
 
 	//Compute checksum and send
 	unsigned char checksum = 0;
@@ -114,8 +118,10 @@ vector<Command> commands = {
             string tmp = *lastLine;
             while (!*tf) {
                 if (tmp != *lastLine && !*plL){
+                    *plL = true;
                     cout << *lastLine << endl;
                     tmp = *lastLine;
+                    *plL = false;
                 }
             }
         });
@@ -123,6 +129,96 @@ vector<Command> commands = {
         threadFlag = true;
         t.join();
     }),
+    Command("demo.start", "starts a demo using 1,2 or 3 columns (depending on the arguments provided)", {"columns"}, [=](vector<string> args) {
+        int n = stoi(args[0]);
+        cout << "Starting demo with " << n << " columns..." <<endl;
+        
+        
+        //Data output
+        bool t1Flag = false;
+        bool* pt1Flag = &t1Flag;
+        thread t([=](){
+            string tmp = *lastLine;
+            while (!*pt1Flag) {
+                if (tmp != *lastLine && !*plL){
+                    *plL = true;
+                    //Parse string and output only Time, Oxygen percentage,
+                    //Flow?
+                    vector<float> inputData;
+                    int pos = 0;
+                    int lastpos = -1;
+                    int counter = 0;
+                    while((pos = lastLine->find(',',pos+1)) != string::npos){
+                        string str = lastLine->substr(lastpos+1, pos);
+                       
+                        if ((counter - 1)%10 == ColumnValue::STATUS){
+                            if (str == "ABSORB") inputData.push_back(ColumnStatus::ABSORB);
+                            else if (str == "INTERME_A") inputData.push_back(ColumnStatus::INTERME_A);
+                            else if (str == "INTERME_B") inputData.push_back(ColumnStatus::INTERME_B);
+                            else if (str == "DESORB") inputData.push_back(ColumnStatus::DESORB);
+                            else inputData.push_back(ColumnStatus::INVALID);
+                        }
+                        else{
+                            try{
+                                inputData.push_back(stof(str));
+                            }catch(const invalid_argument& e){
+                                inputData.push_back(0);
+                            }
+                        }
+                        lastpos = pos;
+                        counter++;                    
+                    }
+                    try{
+                        inputData.push_back(stof(lastLine->substr(lastpos+1,lastLine->length()-1)));
+                    }catch (const invalid_argument& e){
+                            inputData.push_back(0);
+                    }
+
+                    if (inputData.size() > 0){
+                        cout << inputData[StaticColumnValue::TIME] << ", Oxygen %: " << inputData[33] << ", T1: " << inputData[6] << ", T2: " << inputData[16] << ", T3: " << inputData[26] << endl;
+                    }
+                    tmp = *lastLine;
+                    *plL = false;
+                }
+            }
+        });
+        
+        bool t2Flag = false;
+        bool* pt2Flag = &t2Flag;
+        thread t2([=](){
+            string sendString[3] = {"1,1,1,75,45,1.0,7,-7,60,5,255",
+                                "2,1,1,75,45,1.0,5,-5,60,5,255",
+                                "3,1,1,75,45,1.0,5,-5,60,5,255"};
+            /*string stopString[3] = {"1,0,255",
+                                "2,0,255",
+                                "3,0,255"};
+            */
+            for (int i = 0; i < n; i++){
+                cout << "SEND" << endl;
+                write(serial_fd,sendString[i].c_str(),30);
+                for (int j = 0; j < 1000;j++){
+                    usleep(30000);
+                    if (*pt2Flag){
+                        //cleanup and return
+                        /*for (int k = 0; k < n; k++){
+                            serial.write(stopString[k].c_str(),8);
+                        }*/
+                        return;
+                    }
+                }
+            }
+        });
+        cin.get();
+        t1Flag = true;
+        t2Flag = true;
+        t.join();
+        t2.join();
+        
+    }),
+    Command("exit", "exits the program", {}, [=](vector<string> args) {
+        exitRequest = true;        
+    }),
+
 };
 
 int openDevice(const char* device){
@@ -142,17 +238,16 @@ int openDevice(const char* device){
 
 
      port_config.c_iflag = 0; //input flags
-     port_config.c_iflag &= (IXON | IXOFF |INLCR); //input flags (XON/XOFF software flow control, no NL to CR translation)
+     //port_config.c_iflag &= (INLCR); //input flags (XON/XOFF software flow control, no NL to CR translation)
      port_config.c_oflag = 0; //output flags
-     port_config.c_lflag &= ~(ECHO | ECHONL | ICANON | IEXTEN | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
+     port_config.c_lflag = 0;// ~(ECHO | ECHONL | ICANON | IEXTEN | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
      port_config.c_cflag = 0; //control flags
      port_config.c_cflag &= (CLOCAL | CREAD | CS8); //control flags (local connection, enable receivingt characters, force 8 bit input)
 
 
      port_config.c_cc[VMIN]  = 1;
      port_config.c_cc[VTIME] = 0;
-
-     tcsetattr(serial_fd, TCSAFLUSH, &port_config); //Sets the termios struct of the file handle fd from the options defined in options. TCSAFLUSH performs the change as soon as possible.
+     tcsetattr(serial_fd, TCSANOW, &port_config); //Sets the termios struct of the file handle fd from the options defined in options. TCSAFLUSH performs the change as soon as possible.
 
      pid = fork(); //splits process for recieving and sending
      cout << "Serial port opened on: " << device << endl;
@@ -191,24 +286,25 @@ void handle_input() {
     }
 }
 
-void collectData(){
+void collectData(string filename){
+    fstream of(filename, fstream::out);
     while(dataCollect){
         *plL = true;
 	char c;
 	*lastLine = "";
-	while (c != '\0'){ 
+	//while (c != '\0'){ 
              if (read(serial_fd,&c,1) > 0){
-	          *lastLine += c;  
+	          *lastLine += c;
+	          cout << c << endl;  
 	     }
-	}
+	//}
         *plL = false;
-        of << *lastLine; 
+        of << *lastLine << flush;
     }
 }
 
 
 int main(int argc, char** argv){
-     //TODO: Find the USB device corresponding to the cycling jig, usually /dev/ttyACM0, but not guarenteed.
     int n;
     struct dirent **namelist;
     const char* sysdir = "/dev/";
@@ -233,17 +329,24 @@ int main(int argc, char** argv){
         free(namelist);
     }
 
-     openDevice(portName.c_str());
-          
-     //Handle user input, handle cycling jig output
-     char buf[120];
-     dataCollect = true;
-     thread dataCollection(collectData);
-     while (!cin.eof()){ 
-         handle_input();
-     }
-     dataCollect = false;
-     dataCollection.join();
-     close(serial_fd);
-     of.close();
+    openDevice(portName.c_str());
+       
+    //Handle user input, handle cycling jig output
+    time_t t = time(0);
+    struct tm* now = localtime(&t);
+    char baseFilename[17];
+    sprintf(baseFilename, "%04u-%02u-%02u_%02u:%02u",(now->tm_year+1900),(now->tm_mon + 1),(now->tm_mday),(now->tm_hour),(now->tm_min));
+    char filename[8+17+4]; 
+    sprintf(filename,"%s-%s.csv","raw_data",baseFilename);
+    cout << "Creating file: " << filename << endl;
+    char buf[120];
+    dataCollect = true;
+    thread dataCollection(collectData,filename);
+    while (!cin.eof() && !exitRequest){ 
+        handle_input();
+    }
+    dataCollect = false;
+    dataCollection.join();
+    close(serial_fd);
+    of.close();
 }
