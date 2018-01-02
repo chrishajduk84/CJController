@@ -11,12 +11,16 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <signal.h>
+
+#include "main.h"
 
 using namespace LibSerial;
 using namespace std;
 
 SerialStream serial;
-fstream of("raw_data.csv",fstream::out);
+fstream of;
+fstream* pof = &of;
 string lL;
 string* lastLine = &lL;
 bool lineLock = false;
@@ -24,7 +28,7 @@ bool* plL = &lineLock;
 
 bool terminalOutput = false;
 bool dataCollect = false;
-
+bool exitRequest = false;
 
 /**
  * @class Command
@@ -112,8 +116,10 @@ vector<Command> commands = {
             string tmp = *lastLine;
             while (!*tf) {
                 if (tmp != *lastLine && !*plL){
+                    *plL = true;
                     cout << *lastLine << endl;
                     tmp = *lastLine;
+                    *plL = false;
                 }
             }
         });
@@ -121,6 +127,96 @@ vector<Command> commands = {
         threadFlag = true;
         t.join();
     }),
+    Command("demo.start", "starts a demo using 1,2 or 3 columns (depending on the arguments provided)", {"columns"}, [=](vector<string> args) {
+        int n = stoi(args[0]);
+        cout << "Starting demo with " << n << " columns..." <<endl;
+        
+        
+        //Data output
+        bool t1Flag = false;
+        bool* pt1Flag = &t1Flag;
+        thread t([=](){
+            string tmp = *lastLine;
+            while (!*pt1Flag) {
+                if (tmp != *lastLine && !*plL){
+                    *plL = true;
+                    //Parse string and output only Time, Oxygen percentage,
+                    //Flow?
+                    vector<float> inputData;
+                    int pos = 0;
+                    int lastpos = -1;
+                    int counter = 0;
+                    while((pos = lastLine->find(',',pos+1)) != string::npos){
+                        string str = lastLine->substr(lastpos+1, pos);
+                       
+                        if ((counter - 1)%10 == ColumnValue::STATUS){
+                            if (str == "ABSORB") inputData.push_back(ColumnStatus::ABSORB);
+                            else if (str == "INTERME_A") inputData.push_back(ColumnStatus::INTERME_A);
+                            else if (str == "INTERME_B") inputData.push_back(ColumnStatus::INTERME_B);
+                            else if (str == "DESORB") inputData.push_back(ColumnStatus::DESORB);
+                            else inputData.push_back(ColumnStatus::INVALID);
+                        }
+                        else{
+                            try{
+                                inputData.push_back(stof(str));
+                            }catch(const invalid_argument& e){
+                                inputData.push_back(0);
+                            }
+                        }
+                        lastpos = pos;
+                        counter++;                    
+                    }
+                    try{
+                        inputData.push_back(stof(lastLine->substr(lastpos+1,lastLine->length()-1)));
+                    }catch (const invalid_argument& e){
+                            inputData.push_back(0);
+                    }
+
+                    if (inputData.size() > 0){
+                        cout << inputData[StaticColumnValue::TIME] << ", Oxygen %: " << inputData[33] << ", T1: " << inputData[6] << ", T2: " << inputData[16] << ", T3: " << inputData[26] << endl;
+                    }
+                    tmp = *lastLine;
+                    *plL = false;
+                }
+            }
+        });
+        
+        bool t2Flag = false;
+        bool* pt2Flag = &t2Flag;
+        thread t2([=](){
+            string sendString[3] = {"1,1,1,75,45,1.0,7,-7,60,5,255",
+                                "2,1,1,75,45,1.0,5,-5,60,5,255",
+                                "3,1,1,75,45,1.0,5,-5,60,5,255"};
+            /*string stopString[3] = {"1,0,255",
+                                "2,0,255",
+                                "3,0,255"};
+            */
+            for (int i = 0; i < n; i++){
+                cout << "SEND" << endl;
+                serial.write(sendString[i].c_str(),30);
+                for (int j = 0; j < 1000;j++){
+                    usleep(30000);
+                    if (*pt2Flag){
+                        //cleanup and return
+                        /*for (int k = 0; k < n; k++){
+                            serial.write(stopString[k].c_str(),8);
+                        }*/
+                        return;
+                    }
+                }
+            }
+        });
+        cin.get();
+        t1Flag = true;
+        t2Flag = true;
+        t.join();
+        t2.join();
+        
+    }),
+    Command("exit", "exits the program", {}, [=](vector<string> args) {
+        exitRequest = true;        
+    }),
+
 };
 
 void handle_input() {
@@ -156,40 +252,19 @@ void handle_input() {
     }
 }
 
-void collectData(){
+void collectData(string filename){
+    fstream of(filename, fstream::out);
     while(dataCollect){
-        *plL = true;
-        getline(serial,*lastLine);
-        *plL = false;
-        of << *lastLine; 
+        if (*plL == false){
+            *plL = true;
+            getline(serial,*lastLine);
+            *plL = false;
+            of <<*lastLine << flush;
+        }
     }
 }
 
 int main(int argc, char** argv){
-     //TODO: Find the USB device corresponding to the cycling jig, usually /dev/ttyACM0, but not guarenteed.
-     /*libusb_device** dev;
-     int r = 0; int cnt = 0;
-     if ((r = libusb_init(NULL)) < 0) return r;
-     if ((cnt = libusb_get_device_list(NULL,&dev)) < 0) return (int)cnt;
-     
-     string portName = "/dev/ttyACM";
-     libusb_device_handle* handle = NULL;
-     struct libusb_device_descriptor desc;
-     for (int i = 0; i < cnt; i++){
-        if ((r = libusb_get_device_descriptor(dev[i], &desc)) < 0) cout << "Error getting descriptor" << endl;
-        cout << "ID" << desc.idVendor << endl;
-        if (desc.idVendor == 0x2341){ //This is an Arduino
-                if ((r = libusb_open(dev[i],&handle)) == LIBUSB_SUCCESS){
-                    uint8_t usbarray[7];
-                    libusb_get_port_numbers(dev[i],usbarray,7);
-                    libusb_get_configuration(handle,&r);
-                    cout << "ADD" << to_string(r) <<endl;
-                    cout << to_string(usbarray[0]);
-                    portName += to_string(usbarray[0]);
-                    break;
-                }
-        }
-     }*/
     int n;
     struct dirent **namelist;
     const char* sysdir = "/dev/";
@@ -228,14 +303,21 @@ int main(int argc, char** argv){
          return 1;
      }
      
-     //Handle user input, handle cycling jig output
-     char buf[120];
-     dataCollect = true;
-     thread dataCollection(collectData);
-     while (!cin.eof()){ 
-         handle_input();
-     }
-     dataCollect = false;
-     dataCollection.join();
-     of.close();
+    //Handle user input, handle cycling jig output
+    time_t t = time(0);
+    struct tm* now = localtime(&t);
+    char baseFilename[17];
+    sprintf(baseFilename, "%04u-%02u-%02u_%02u:%02u",(now->tm_year+1900),(now->tm_mon + 1),(now->tm_mday),(now->tm_hour),(now->tm_min));
+    char filename[8+17+4]; 
+    sprintf(filename,"%s-%s.csv","raw_data",baseFilename);
+    cout << "Creating file: " << filename << endl;
+    char buf[120];
+    dataCollect = true;
+    thread dataCollection(collectData,filename);
+    while (!cin.eof() && !exitRequest){ 
+        handle_input();
+    }
+    dataCollect = false;
+    dataCollection.join();
+    of.close();
 }
