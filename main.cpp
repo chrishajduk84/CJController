@@ -295,7 +295,6 @@ void collectData(string filename){
 	        string str = "";
 	        do{ 
                 	if (read(serial_fd,&c,1) > 0){
-				if (c == 13 || c == 10) break; //Don't add linebreaks to data
 	                	str += c;      	            		
 			}
 	        } while (c != 13 && c != 10);
@@ -340,7 +339,7 @@ int main(int argc, char** argv){
     time_t t = time(0);
     struct tm* now = localtime(&t);
     char baseFilename[17];
-    sprintf(baseFilename, "%04u-%02u-%02u_%02u:%02u",(now->tm_year+1900),(now->tm_mon + 1),(now->tm_mday),(now->tm_hour),(now->tm_min));
+    sprintf(baseFilename, "%04u-%02u-%02u_%02u_%02u",(now->tm_year+1900),(now->tm_mon + 1),(now->tm_mday),(now->tm_hour),(now->tm_min));
     char filename[8+17+4]; 
     sprintf(filename,"%s-%s.csv","raw_data",baseFilename);
     cout << "Creating file: " << filename << endl;
