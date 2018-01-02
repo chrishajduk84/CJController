@@ -1,21 +1,23 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
-#include <SerialStream.h>
 #include <initializer_list>
 #include <fstream>
 #include <thread>
-#include "libusb.h"
 #include <string>
 #include <string.h>
 #include <sstream>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <vector>
+#include <termios.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 
-using namespace LibSerial;
 using namespace std;
 
-SerialStream serial;
+int pid, serial_fd;
 fstream of("raw_data.csv",fstream::out);
 string lL;
 string* lastLine = &lL;
@@ -71,7 +73,7 @@ vector<Command> commands = {
 	    if (args.size() == 0) {
             //Ask questions:
 	      	    
-	        data.push_back(questionValue("What cartridge (#)?"));
+            data.push_back(questionValue("What cartridge (#)?"));
      	    data.push_back(questionValue("How many tests?"));
             int tests = stoi(data.at(1));
   	        for (int i = 0; i < tests; i++){
@@ -103,7 +105,7 @@ vector<Command> commands = {
 	sendString += to_string(checksum);
     cout << sendString;
     string::size_type st = sendString.length()*8;
-	serial.write(sendString.c_str(), st);
+	write(serial_fd,sendString.c_str(), st);
     }),
     Command("data.show", "shows data coming from the device; specifying an integer will output data only from the specified column", {}, [=](vector<string> args) {
         bool threadFlag = false;
@@ -122,6 +124,39 @@ vector<Command> commands = {
         t.join();
     }),
 };
+
+int openDevice(const char* device){
+     struct termios port_config; //sets up termios configuration structure for the serial port
+     char input[10];
+
+     serial_fd = open(device, O_RDWR | O_NOCTTY | O_NDELAY); //opens serial port in device slot
+     if(serial_fd == -1)
+     { //-1 is the error message for failed open port
+           fprintf(stdout, "failed to open port\n");
+     }
+
+     tcgetattr(serial_fd, &port_config);
+
+     cfsetispeed(&port_config, B115200); //set baud input to 9600 (might be wrong?)
+     cfsetospeed(&port_config, B115200); //set baud output to 9600 (might be wrong?)
+
+
+     port_config.c_iflag = 0; //input flags
+     port_config.c_iflag &= (IXON | IXOFF |INLCR); //input flags (XON/XOFF software flow control, no NL to CR translation)
+     port_config.c_oflag = 0; //output flags
+     port_config.c_lflag &= ~(ECHO | ECHONL | ICANON | IEXTEN | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
+     port_config.c_cflag = 0; //control flags
+     port_config.c_cflag &= (CLOCAL | CREAD | CS8); //control flags (local connection, enable receivingt characters, force 8 bit input)
+
+
+     port_config.c_cc[VMIN]  = 1;
+     port_config.c_cc[VTIME] = 0;
+
+     tcsetattr(serial_fd, TCSAFLUSH, &port_config); //Sets the termios struct of the file handle fd from the options defined in options. TCSAFLUSH performs the change as soon as possible.
+
+     pid = fork(); //splits process for recieving and sending
+     cout << "Serial port opened on: " << device << endl;
+}
 
 void handle_input() {
     cout << "vivaspire$ ";
@@ -159,37 +194,21 @@ void handle_input() {
 void collectData(){
     while(dataCollect){
         *plL = true;
-        getline(serial,*lastLine);
+	char c;
+	*lastLine = "";
+	while (c != '\0'){ 
+             if (read(serial_fd,&c,1) > 0){
+	          *lastLine += c;  
+	     }
+	}
         *plL = false;
         of << *lastLine; 
     }
 }
 
+
 int main(int argc, char** argv){
      //TODO: Find the USB device corresponding to the cycling jig, usually /dev/ttyACM0, but not guarenteed.
-     /*libusb_device** dev;
-     int r = 0; int cnt = 0;
-     if ((r = libusb_init(NULL)) < 0) return r;
-     if ((cnt = libusb_get_device_list(NULL,&dev)) < 0) return (int)cnt;
-     
-     string portName = "/dev/ttyACM";
-     libusb_device_handle* handle = NULL;
-     struct libusb_device_descriptor desc;
-     for (int i = 0; i < cnt; i++){
-        if ((r = libusb_get_device_descriptor(dev[i], &desc)) < 0) cout << "Error getting descriptor" << endl;
-        cout << "ID" << desc.idVendor << endl;
-        if (desc.idVendor == 0x2341){ //This is an Arduino
-                if ((r = libusb_open(dev[i],&handle)) == LIBUSB_SUCCESS){
-                    uint8_t usbarray[7];
-                    libusb_get_port_numbers(dev[i],usbarray,7);
-                    libusb_get_configuration(handle,&r);
-                    cout << "ADD" << to_string(r) <<endl;
-                    cout << to_string(usbarray[0]);
-                    portName += to_string(usbarray[0]);
-                    break;
-                }
-        }
-     }*/
     int n;
     struct dirent **namelist;
     const char* sysdir = "/dev/";
@@ -214,20 +233,8 @@ int main(int argc, char** argv){
         free(namelist);
     }
 
-     serial.Open(portName);
-     serial.SetCharSize(SerialStreamBuf::CHAR_SIZE_8);
-     serial.SetBaudRate(SerialStreamBuf::BAUD_115200);
-     serial.SetNumOfStopBits(1);
-     serial.SetFlowControl(SerialStreamBuf::FLOW_CONTROL_NONE);
-     if(serial.good()){
-         cout << "SUCCESSFUL: serial port opened at: " << portName << endl;
-         usleep(1000);
-     }
-     else{
-         cout << "ERROR: Could not open serial port." << endl;
-         return 1;
-     }
-     
+     openDevice(portName.c_str());
+          
      //Handle user input, handle cycling jig output
      char buf[120];
      dataCollect = true;
@@ -237,5 +244,6 @@ int main(int argc, char** argv){
      }
      dataCollect = false;
      dataCollection.join();
+     close(serial_fd);
      of.close();
 }
