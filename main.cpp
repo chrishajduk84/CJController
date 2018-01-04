@@ -108,12 +108,12 @@ vector<Command> commands = {
     string buf;
 	sendString += to_string(checksum);
     cout << sendString;
-    string::size_type st = sendString.length()*8;
-	write(serial_fd,sendString.c_str(), st);
+    string::size_type st = sendString.length() + 1;
+    write(serial_fd,sendString.c_str(), st);
     }),
     Command("data.show", "shows data coming from the device; specifying an integer will output data only from the specified column", {}, [=](vector<string> args) {
         bool threadFlag = false;
-        bool* tf = &threadFlag;
+        bool* tf = &threadFlag;	
         thread t([=](){
             string tmp = *lastLine;
             while (!*tf) {
@@ -289,17 +289,22 @@ void collectData(string filename){
     fstream of(filename, fstream::out);
     while(dataCollect){
         if (!*plL){
-            *plL = true;
+           	 
 	        char c;
-	        *lastLine = "";
+		int i = 0;
+	        string str = "";
 	        do{ 
-                if (read(serial_fd,&c,1) > 0){
-	                *lastLine += c;      
-	            }
+                	if (read(serial_fd,&c,1) > 0){
+				if (c == 13 || c == 10) break; //Don't add linebreaks to data
+	                	str += c;      	            		
+			}
 	        } while (c != 13 && c != 10);
-            *plL = false;
+	    *plL = true;
+            *lastLine = string(str);	    
+	    *plL = false;
             of << *lastLine << flush;
         }
+	usleep(750000);
     }
 }
 
