@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <signal.h>
 #include "main.h"
+#include <atomic>
 
 
 using namespace std;
@@ -25,8 +26,9 @@ fstream of("raw_data.csv",fstream::out);
 fstream* pof = &of;
 string lL;
 string* lastLine = &lL;
-bool lineLock = false;
-bool* plL = &lineLock;
+std::atomic<bool> lineLock (false);
+std::atomic<bool>* plL;
+plL = &lineLock;
 
 bool terminalOutput = false;
 bool dataCollect = false;
@@ -297,11 +299,11 @@ void collectData(string filename){
                 	if (read(serial_fd,&c,1) > 0){
 	                	str += c;      	            		
 			}
-	        } while (c != 13 && c != 10);
+	        } while (c != 13 && c != 10)std::this_thread::yield();//KARAM https://stackoverflow.com/questions/11048946/stdthis-threadyield-vs-stdthis-threadsleep-for
 	    *plL = true;
             *lastLine = string(str);	    
 	    *plL = false;
-            of << *lastLine << flush;
+            of << *lastLine;
         }
 	usleep(750000);
     }
