@@ -16,19 +16,20 @@
 #include <errno.h>
 #include <signal.h>
 #include "main.h"
-#include <atomic>
+#include <mutex>
 
 
 using namespace std;
 
 int serial_fd;
-fstream of("raw_data.csv",fstream::out);
+fstream of;
 fstream* pof = &of;
 string lL;
 string* lastLine = &lL;
-std::atomic<bool> lineLock (false);
-std::atomic<bool>* plL;
-plL = &lineLock;
+bool lineLock (false);
+bool* plL = &lineLock;
+
+mutex dataMutex;
 
 bool terminalOutput = false;
 bool dataCollect = false;
@@ -116,15 +117,15 @@ vector<Command> commands = {
     Command("data.show", "shows data coming from the device; specifying an integer will output data only from the specified column", {}, [=](vector<string> args) {
         bool threadFlag = false;
         bool* tf = &threadFlag;	
-        thread t([=](){
-            string tmp = *lastLine;
+        thread t([&](){            
+	    string tmp = *lastLine;
             while (!*tf) {
-                if (tmp != *lastLine && !*plL){
-                    *plL = true;
-                    cout << *lastLine << endl;
+		if (tmp != *lastLine){
+                    lock_guard<mutex> guard(dataMutex);
+		    cout << *lastLine << endl;
                     tmp = *lastLine;
-                    *plL = false;
                 }
+		this_thread::yield();		
             }
         });
         cin.get();
@@ -243,6 +244,7 @@ int openDevice(const char* device){
      }
 
      port_config.c_iflag &= ~(IXANY | IXOFF | IXON); //input flags (XON/XOFF software flow control, no NL to CR translation)
+     port_config.c_iflag |= (INLCR);
      port_config.c_oflag &= ~OPOST;
      port_config.c_lflag &= ~(ECHO | ECHOE | ICANON | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
      port_config.c_cflag &= ~(CSIZE | PARENB | CSTOPB | CRTSCTS);
@@ -290,22 +292,23 @@ void handle_input() {
 void collectData(string filename){
     fstream of(filename, fstream::out);
     while(dataCollect){
-        if (!*plL){
-           	 
-	        char c;
-		int i = 0;
-	        string str = "";
-	        do{ 
-                	if (read(serial_fd,&c,1) > 0){
-	                	str += c;      	            		
-			}
-	        } while (c != 13 && c != 10)std::this_thread::yield();//KARAM https://stackoverflow.com/questions/11048946/stdthis-threadyield-vs-stdthis-threadsleep-for
-	    *plL = true;
-            *lastLine = string(str);	    
-	    *plL = false;
-            of << *lastLine;
-        }
-	usleep(750000);
+       	char c;
+	int i = 0;
+	string str = "";
+	do{
+		this_thread::yield(); 
+                if (read(serial_fd,&c,1) > 0){
+	               	str += c;      	            		
+		}
+        } while (c != 13 && c != 10);
+	{
+		lock_guard<mutex> guard(dataMutex);
+        	*lastLine = string(str);
+	}	    
+	this_thread::yield();
+    	of << *lastLine;
+        this_thread::yield();
+    	usleep(500000);	
     }
 }
 
