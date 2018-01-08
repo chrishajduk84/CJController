@@ -244,7 +244,7 @@ int openDevice(const char* device){
      }
 
      port_config.c_iflag &= ~(IXANY | IXOFF | IXON); //input flags (XON/XOFF software flow control, no NL to CR translation)
-     port_config.c_iflag |= (INLCR);
+     port_config.c_iflag |= (IGNCR);
      port_config.c_oflag &= ~OPOST;
      port_config.c_lflag &= ~(ECHO | ECHOE | ICANON | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
      port_config.c_cflag &= ~(CSIZE | PARENB | CSTOPB | CRTSCTS);
