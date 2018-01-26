@@ -1,25 +1,27 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
-#include <SerialStream.h>
 #include <initializer_list>
 #include <fstream>
 #include <thread>
-#include "libusb.h"
 #include <string>
 #include <string.h>
 #include <sstream>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <vector>
+#include <termios.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 #include <signal.h>
-
 #include "main.h"
 
-using namespace LibSerial;
+
 using namespace std;
 
-SerialStream serial;
-fstream of;
+int serial_fd;
+fstream of("raw_data.csv",fstream::out);
 fstream* pof = &of;
 string lL;
 string* lastLine = &lL;
@@ -75,7 +77,7 @@ vector<Command> commands = {
 	    if (args.size() == 0) {
             //Ask questions:
 	      	    
-	        data.push_back(questionValue("What cartridge (#)?"));
+            data.push_back(questionValue("What cartridge (#)?"));
      	    data.push_back(questionValue("How many tests?"));
             int tests = stoi(data.at(1));
   	        for (int i = 0; i < tests; i++){
@@ -90,7 +92,7 @@ vector<Command> commands = {
             }
         } else {
            //TODO: Parse arguments
-        }
+    }
 
 	//Compute checksum and send
 	unsigned char checksum = 0;
@@ -106,12 +108,12 @@ vector<Command> commands = {
     string buf;
 	sendString += to_string(checksum);
     cout << sendString;
-    string::size_type st = sendString.length()*8;
-	serial.write(sendString.c_str(), st);
+    string::size_type st = sendString.length() + 1;
+    write(serial_fd,sendString.c_str(), st);
     }),
     Command("data.show", "shows data coming from the device; specifying an integer will output data only from the specified column", {}, [=](vector<string> args) {
         bool threadFlag = false;
-        bool* tf = &threadFlag;
+        bool* tf = &threadFlag;	
         thread t([=](){
             string tmp = *lastLine;
             while (!*tf) {
@@ -193,7 +195,7 @@ vector<Command> commands = {
             */
             for (int i = 0; i < n; i++){
                 cout << "SEND" << endl;
-                serial.write(sendString[i].c_str(),30);
+                write(serial_fd,sendString[i].c_str(),30);
                 for (int j = 0; j < 1000;j++){
                     usleep(30000);
                     if (*pt2Flag){
@@ -218,6 +220,37 @@ vector<Command> commands = {
     }),
 
 };
+
+int openDevice(const char* device){
+     struct termios port_config; //sets up termios configuration structure for the serial port
+     serial_fd = open(device, O_RDWR, O_NOCTTY);// | O_NOCTTY | O_NDELAY); //opens serial port in device slot
+     if(serial_fd == -1)
+     { //-1 is the error message for failed open port
+           fprintf(stdout, "failed to open port\n");
+     }
+
+     if (tcgetattr(serial_fd, &port_config) < 0){
+         cout << "Error getting port configuration" << endl;   
+     }
+
+     if (cfsetospeed(&port_config, B115200) < 0){
+         cout << "Error setting output baud rate" << endl;
+     }
+     if (cfsetispeed(&port_config, B115200) < 0){
+         cout << "Error setting input baud rate" << endl;
+     }
+
+     port_config.c_iflag &= ~(IXANY | IXOFF | IXON); //input flags (XON/XOFF software flow control, no NL to CR translation)
+     port_config.c_oflag &= ~OPOST;
+     port_config.c_lflag &= ~(ECHO | ECHOE | ICANON | ISIG); //local flags (no line processing, echo off, echo newline off, canonical mode off, extended input processing off, signal chars off)
+     port_config.c_cflag &= ~(CSIZE | PARENB | CSTOPB | CRTSCTS);
+     port_config.c_cflag |= (CS8 | CREAD | CLOCAL); //Control flags (local connection, enable receivingt characters, force 8 bit input)
+
+     port_config.c_cc[VMIN]  = 1;
+     port_config.c_cc[VTIME] = 0;
+     tcsetattr(serial_fd, TCSANOW, &port_config); //Sets the termios struct of the file handle fd from the options defined in options. TCSAFLUSH performs the change as soon as possible.
+     cout << "Serial port opened on: " << device << endl;
+}
 
 void handle_input() {
     cout << "vivaspire$ ";
@@ -255,14 +288,25 @@ void handle_input() {
 void collectData(string filename){
     fstream of(filename, fstream::out);
     while(dataCollect){
-        if (*plL == false){
-            *plL = true;
-            getline(serial,*lastLine);
-            *plL = false;
-            of <<*lastLine << flush;
+        if (!*plL){
+           	 
+	        char c;
+		int i = 0;
+	        string str = "";
+	        do{ 
+                	if (read(serial_fd,&c,1) > 0){
+	                	str += c;      	            		
+			}
+	        } while (c != 13 && c != 10);
+	    *plL = true;
+            *lastLine = string(str);	    
+	    *plL = false;
+            of << *lastLine << flush;
         }
+	usleep(750000);
     }
 }
+
 
 int main(int argc, char** argv){
     int n;
@@ -289,25 +333,13 @@ int main(int argc, char** argv){
         free(namelist);
     }
 
-     serial.Open(portName);
-     serial.SetCharSize(SerialStreamBuf::CHAR_SIZE_8);
-     serial.SetBaudRate(SerialStreamBuf::BAUD_115200);
-     serial.SetNumOfStopBits(1);
-     serial.SetFlowControl(SerialStreamBuf::FLOW_CONTROL_NONE);
-     if(serial.good()){
-         cout << "SUCCESSFUL: serial port opened at: " << portName << endl;
-         usleep(1000);
-     }
-     else{
-         cout << "ERROR: Could not open serial port." << endl;
-         return 1;
-     }
-     
+    openDevice(portName.c_str());
+       
     //Handle user input, handle cycling jig output
     time_t t = time(0);
     struct tm* now = localtime(&t);
     char baseFilename[17];
-    sprintf(baseFilename, "%04u-%02u-%02u_%02u:%02u",(now->tm_year+1900),(now->tm_mon + 1),(now->tm_mday),(now->tm_hour),(now->tm_min));
+    sprintf(baseFilename, "%04u-%02u-%02u_%02u_%02u",(now->tm_year+1900),(now->tm_mon + 1),(now->tm_mday),(now->tm_hour),(now->tm_min));
     char filename[8+17+4]; 
     sprintf(filename,"%s-%s.csv","raw_data",baseFilename);
     cout << "Creating file: " << filename << endl;
@@ -319,5 +351,6 @@ int main(int argc, char** argv){
     }
     dataCollect = false;
     dataCollection.join();
+    close(serial_fd);
     of.close();
 }

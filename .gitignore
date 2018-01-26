@@ -34,3 +34,9 @@
 # Build Folder
 build
 build/*
+
+# Any generated csv files
+*.csv
+
+# Any Swap Files
+*.swp
