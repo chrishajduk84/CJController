@@ -1,1 +1,1 @@
-screen -r CJController
+screen -x CJController
