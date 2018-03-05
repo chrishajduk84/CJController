@@ -21,7 +21,7 @@
 using namespace std;
 
 int serial_fd;
-fstream of("raw_data.csv",fstream::out);
+fstream of;
 fstream* pof = &of;
 string lL;
 string* lastLine = &lL;
@@ -341,7 +341,7 @@ int main(int argc, char** argv){
     char baseFilename[17];
     sprintf(baseFilename, "%04u-%02u-%02u_%02u_%02u",(now->tm_year+1900),(now->tm_mon + 1),(now->tm_mday),(now->tm_hour),(now->tm_min));
     char filename[8+17+4]; 
-    sprintf(filename,"%s-%s.csv","raw_data",baseFilename);
+    sprintf(filename,"data/%s-%s.csv","raw_data",baseFilename);
     cout << "Creating file: " << filename << endl;
     char buf[120];
     dataCollect = true;
